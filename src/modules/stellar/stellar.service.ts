@@ -9,6 +9,7 @@ import {
   Memo,
   Networks,
   Operation,
+  StrKey,
   Transaction,
   TransactionBuilder,
 } from '@stellar/stellar-sdk';
@@ -23,6 +24,8 @@ export interface BalanceRecord {
   asset_issuer: string | null;
   balance: string;
   limit: string | null;
+  minimum_reserve?: string;
+  spendable_balance?: string;
 }
 
 export interface TransactionRecord {
@@ -100,6 +103,12 @@ export class StellarService {
 
   async getBalances(publicKey: string): Promise<BalanceRecord[]> {
     const account = await this.getAccount(publicKey);
+    const root = await this.server.root().call();
+    const baseReserve = Number(root.base_reserve_in_stroops) / 10_000_000;
+    const subentryCount = Number(account.subentry_count ?? 0);
+    const sponsoring = Number(account.num_sponsoring ?? 0);
+    const sponsored = Number(account.num_sponsored ?? 0);
+    const minimumReserve = Math.max(0, 2 + subentryCount + sponsoring - sponsored) * baseReserve;
 
     return account.balances.map((b): BalanceRecord => {
       const record: BalanceRecord = {
@@ -109,6 +118,16 @@ export class StellarService {
         balance: b.balance,
         limit: 'limit' in b ? (b.limit ?? null) : null,
       };
+      if (b.asset_type === 'native') {
+        const sellingLiabilities = Number(
+          'selling_liabilities' in b ? b.selling_liabilities ?? 0 : 0,
+        );
+        record.minimum_reserve = minimumReserve.toFixed(7);
+        record.spendable_balance = Math.max(
+          0,
+          Number(b.balance) - sellingLiabilities - minimumReserve,
+        ).toFixed(7);
+      }
       return record;
     });
   }
@@ -318,10 +337,10 @@ export class StellarService {
   }
 
   private assertPublicKey(key: string): void {
-    if (!key || key[0] !== 'G' || key.length < 50) {
+    if (!StrKey.isValidEd25519PublicKey(key)) {
       throw new AppException(
         ErrorCode.INVALID_STELLAR_ADDRESS,
-        'Invalid public key. Must start with "G" and be at least 50 characters.',
+        'Invalid Stellar account public key.',
       );
     }
   }
